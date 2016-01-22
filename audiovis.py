@@ -13,90 +13,45 @@ since data can only be read after calling stop, and in fact, maybe quite some ti
       
 
 '''
-from ctypes import c_void_p, c_char_p, c_double, c_float, c_int, cdll, util, c_bool
+from objc_util import *
 import os
 import time
 import wave,array
 import math
 import numpy as np
 import numpy.fft
+import scene
 
-# Load Objective-C runtime:
-objc = cdll.LoadLibrary(util.find_library('objc'))
-objc.sel_getName.restype = c_char_p
-objc.sel_getName.argtypes = [c_void_p]
-objc.sel_registerName.restype = c_void_p
-objc.sel_registerName.argtypes = [c_char_p]
-objc.objc_getClass.argtypes = [c_char_p]
-objc.objc_getClass.restype = c_void_p
+
 
 # Some helper methods:
-def obj_to_str(obj):
-   objc.objc_msgSend.argtypes = [c_void_p, c_void_p]
-   objc.objc_msgSend.restype = c_void_p
-   desc = objc.objc_msgSend(obj, objc.sel_registerName('description'))
-   objc.objc_msgSend.argtypes = [c_void_p, c_void_p]
-   objc.objc_msgSend.restype = c_char_p
-   return objc.objc_msgSend(desc, objc.sel_registerName('UTF8String'))
-
-def msg(obj, restype, sel, argtypes=None, *args):
-   if argtypes is None:
-      argtypes = []
-   objc.objc_msgSend.argtypes =  [c_void_p, c_void_p] + argtypes
-   objc.objc_msgSend.restype = restype
-   res = objc.objc_msgSend(obj, objc.sel_registerName(sel), *args)
-   return res
-
-def cls(cls_name):
-   return objc.objc_getClass(cls_name)
-
-def nsstr(s):
-   return msg(cls('NSString'), c_void_p, 'stringWithUTF8String:', [c_char_p], s)
-
-def nsurl_from_path(s):
-   return msg(cls('NSURL'), c_void_p, 'fileURLWithPath:', [c_void_p], nsstr(s))
-
-def ns_int(i):
-   return msg(cls('NSNumber'), c_void_p, 'numberWithInt:', [c_int], i)
-
-def ns_float(f):
-   return msg(cls('NSNumber'), c_void_p, 'numberWithFloat:', [c_float], f)
-
-def ns_double(d):
-   return msg(cls('NSNumber'), c_void_p, 'numberWithDouble:', [c_double], d)
-class AVAudioSession(object):
+AVAudioSession = ObjCClass('AVAudioSession')
+class AVAudioSessionWrapper(object):
    def __init__(self,sample_rate=8000.0):
-      AVAudioSession = cls('AVAudioSession')
-      shared_session = msg(AVAudioSession, c_void_p, 'sharedInstance')
-      category_set = msg(shared_session, c_bool, 'setCategory:error:', [c_void_p, c_void_p], nsstr('AVAudioSessionCategoryPlayAndRecord'), None)
-
-      settings = msg(cls('NSMutableDictionary'), c_void_p, 'dictionary')
+      shared_session = AVAudioSession.sharedInstance()
+      category_set = shared_session.setCategory_error_('AVAudioSessionCategoryPlayAndRecord', None)
       kAudioFormat = int('lpcm'.encode('hex'),16)
+      settings={'AVFormatIDKey':kAudioFormat,
+						'AVSampleRateKey':sample_rate,
+						'AVNumberOfChannelsKey':1}
 
-      msg(settings, None, 'setObject:forKey:', [c_void_p, c_void_p], ns_int(kAudioFormat), nsstr('AVFormatIDKey'))
-
-      msg(settings, None, 'setObject:forKey:', [c_void_p, c_void_p], ns_float(sample_rate), nsstr('AVSampleRateKey'))
-
-      msg(settings, None, 'setObject:forKey:', [c_void_p, c_void_p], ns_int(1), nsstr('AVNumberOfChannelsKey'))
       self.settings=settings
       self.shared_session=shared_session
       self.category_set=category_set
-      self.AVAudioSession=AVAudioSession
-class AVAudioRecorder(object):
+      
+class AVAudioRecorderWrapper(object):
    def __init__(self,idx=1):
-      sess=AVAudioSession()
+      sess=AVAudioSessionWrapper()
       self.output_path = os.path.abspath('recorder{}.wav'.format(idx))
-      self.out_url = nsurl_from_path(self.output_path)
-      self.recorder1 = msg(cls('AVAudioRecorder'), c_void_p, 'alloc')
-      recorder = msg(self.recorder1, c_void_p, 'initWithURL:settings:error:', [c_void_p, c_void_p, c_void_p], self.out_url, sess.settings, None)
-      self.recorder=recorder
-      self.__msg=msg
+      self.out_url = nsurl(self.output_path)
+      #self.recorder1 = ObjCClass('AVAudioRecorder').alloc()
+      self.recorder=ObjCClass('AVAudioRecorder').alloc().initWithURL_settings_error_(self.out_url, sess.settings, None)
       self.record()
       self.stop()
    def record(self):
-      msg(self.recorder, c_bool, 'record')
+   	self.recorder.record()
    def stop(self):
-      msg(self.recorder,None,'stop')
+   	self.recorder.stop()
    def data(self):
       try:
          wf=wave.open(self.output_path)
@@ -113,15 +68,16 @@ class AVAudioRecorder(object):
       except ValueError:
           return np.double([])
    def __del__(self):
-      msg=self.__msg
-      msg(self.recorder,None,'stop')
-      msg(self.recorder, None, 'release')
+      import os
+      self.recorder.stop()
+      self.recorder.release()
+      self.recorder=None
       os.remove(self.output_path)
       
       
 T=1.0 # recording length.  dont make too small, or recorder wont record.
 Nr=5  # number of recorders.  this defines frame update time:mthe frame update will be is T/(Nr-1), though this may be driven slower by other factors 
-r=[AVAudioRecorder(i) for i in xrange(Nr)]
+r=[AVAudioRecorderWrapper(i) for i in xrange(Nr)]
 
 Np=float(2001); # float..num points to plot on screen.. too high will lower frame rate
 import ui
@@ -129,11 +85,11 @@ W,H=ui.get_screen_size()
 
 if 1:
 
-   import sk
+   #import sk
    from threading import Thread
-   class Vis(sk.Scene):
+   class Vis(scene.Scene):
       def __init__(self,dofft=False):
-         self.v=[sk.SpriteNode() for x in xrange(int(Np))]
+         self.v=[scene.SpriteNode() for x in xrange(int(Np))]
          for i,sp in enumerate(self.v):
             sp.size=(1.5,1.5)
             sp.position=(float(i)/Np*W,H/2)
@@ -144,11 +100,11 @@ if 1:
          # then, 0.5 sec later, start r[2], stop r[0]
          # read r[0], then start r[0], stop r[1]
          # basically, each frame we read/start one, and stop i+1
-         self.a1=sk.Action.call(self.update_y)
-         self.a2=sk.wait(T/(Nr-1))
-         self.a3=sk.sequence([self.a1,self.a2])
-         self.a4=sk.Action.repeat_forever(self.a3)
-         n=sk.Node()
+         self.a1=scene.Action.call(self.update_y)
+         self.a2=scene.Action.wait(T/(Nr-1))
+         self.a3=scene.Action.sequence([self.a1,self.a2])
+         self.a4=scene.Action.repeat(self.a3,-1)
+         n=scene.Node()
          n.name='n'
          self.add_child(n)
          n.run_action(self.a4)
@@ -184,14 +140,6 @@ if 1:
    
    #sc=Vis(dofft=True)
    sc=Vis(dofft=False)
-   v=sk.View(sc)
-   v.shows_fps=True
-   v.shows_node_count=True
-   v.present()
-   
-   def cleanup():
-      # required b/c beta always clears globals
-      print 'cleaning up'
-      del globals()['r']
-      del globals()['sc']
-      del globals()['v']
+   sc.shows_fps=True
+   sc.shows_node_count=True
+   scene.run(sc)
