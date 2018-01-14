@@ -1,3 +1,4 @@
+#!python2
 '''
 Audio Visualizer for puthonista beta
 
@@ -90,6 +91,7 @@ if 1:
    class Vis(scene.Scene):
       def __init__(self,dofft=False):
          self.v=[scene.SpriteNode() for x in xrange(int(Np))]
+         self.fixed_time_step=False
          for i,sp in enumerate(self.v):
             sp.size=(1.5,1.5)
             sp.position=(float(i)/Np*W,H/2)
